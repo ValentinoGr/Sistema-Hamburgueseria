@@ -1,3 +1,24 @@
 # Contexto personal para Claude (no se sube al repo)
 CLAUDE.md
 CLAUDE.local.md
+
+# Dependencias y builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Variables de entorno (solo se sube el .example)
+.env
+.env.*
+!.env.example
+
+# Cliente de Prisma generado (se regenera con npx prisma generate)
+apps/api/src/generated/
+
+# Herramientas de IA locales del back
+apps/api/.agents/
+apps/api/.claude/
+apps/api/.windsurf/
+apps/api/AGENTS.md
+apps/api/skills-lock.json

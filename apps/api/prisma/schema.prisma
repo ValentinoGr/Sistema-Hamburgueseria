@@ -1,0 +1,292 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Enums ----------
+// Tienen que coincidir exactamente con packages/shared/src/enums.ts
+
+enum Rol {
+  ADMIN
+  COCINA
+  CAJA
+}
+
+enum EstadoPedido {
+  NUEVO
+  EN_PREPARACION
+  LISTO
+  EN_CAMINO
+  ENTREGADO
+  CANCELADO
+}
+
+enum TipoEntrega {
+  DELIVERY
+  RETIRO
+}
+
+enum MedioPago {
+  TRANSFERENCIA
+  EFECTIVO
+  MERCADO_PAGO
+}
+
+enum EstadoPago {
+  PENDIENTE
+  CONFIRMADO
+  RECHAZADO
+}
+
+enum OrigenPedido {
+  WEB
+  CAJA
+}
+
+enum MotivoCancelacion {
+  CLIENTE_DESISTIO
+  SIN_STOCK
+  PAGO_NO_RECIBIDO
+  OTRO
+}
+
+// ---------- Personal ----------
+
+model Usuario {
+  id            Int      @id @default(autoincrement())
+  nombre        String
+  email         String   @unique
+  passwordHash  String
+  rol           Rol
+  activo        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  pagosConfirmados Pedido[]
+  cambiosEstado    PedidoCambioEstado[]
+}
+
+// ---------- Catálogo ----------
+
+model Categoria {
+  id        Int        @id @default(autoincrement())
+  nombre    String     @unique
+  orden     Int        @default(0)
+  activa    Boolean    @default(true)
+  productos Producto[]
+}
+
+model Producto {
+  id               Int       @id @default(autoincrement())
+  categoriaId      Int
+  categoria        Categoria @relation(fields: [categoriaId], references: [id])
+  nombre           String
+  descripcion      String?
+  precio           Int
+  imagenUrl        String?
+  disponible       Boolean   @default(true) // stock del día
+  esPersonalizable Boolean   @default(false)
+  orden            Int       @default(0)
+  activo           Boolean   @default(true) // baja lógica
+  creadoEn         DateTime  @default(now())
+  actualizadoEn    DateTime  @updatedAt
+
+  tamanos      ProductoTamano[]
+  extras       ProductoExtra[]
+  ingredientes ProductoIngrediente[]
+  pedidoItems  PedidoItem[]
+
+  @@index([categoriaId])
+}
+
+model Tamano {
+  id              Int              @id @default(autoincrement())
+  nombre          String
+  precioAdicional Int              @default(0)
+  orden           Int              @default(0)
+  productos       ProductoTamano[]
+}
+
+model Extra {
+  id         Int             @id @default(autoincrement())
+  nombre     String
+  precio     Int
+  disponible Boolean         @default(true)
+  productos  ProductoExtra[]
+}
+
+model Ingrediente {
+  id        Int                   @id @default(autoincrement())
+  nombre    String                @unique
+  productos ProductoIngrediente[]
+}
+
+// ---------- Tablas puente: qué se puede personalizar en cada producto ----------
+
+model ProductoTamano {
+  productoId Int
+  tamanoId   Int
+  producto   Producto @relation(fields: [productoId], references: [id])
+  tamano     Tamano   @relation(fields: [tamanoId], references: [id])
+
+  @@id([productoId, tamanoId])
+}
+
+model ProductoExtra {
+  productoId Int
+  extraId    Int
+  producto   Producto @relation(fields: [productoId], references: [id])
+  extra      Extra    @relation(fields: [extraId], references: [id])
+
+  @@id([productoId, extraId])
+}
+
+model ProductoIngrediente {
+  productoId    Int
+  ingredienteId Int
+  producto      Producto    @relation(fields: [productoId], references: [id])
+  ingrediente   Ingrediente @relation(fields: [ingredienteId], references: [id])
+
+  @@id([productoId, ingredienteId])
+}
+
+// ---------- Envíos ----------
+
+model ZonaEnvio {
+  id     Int     @id @default(autoincrement())
+  nombre String  @unique
+  costo  Int
+  activa Boolean @default(true)
+
+  pedidos Pedido[]
+}
+
+// ---------- Configuración del local ----------
+
+model ConfiguracionLocal {
+  id                 Int     @id @default(1) // siempre hay una sola fila, con id 1
+  nombreLocal        String
+  telefono           String?
+  aliasTransferencia String?
+  cbu                String?
+  minutosAlerta      Int     @default(20) // ticket en rojo en cocina
+  horaCorteDia       String  @default("06:00") // "HH:mm", hasta esta hora cuenta como el día anterior
+  pedidosPausados    Boolean @default(false) // cerrar la web en el momento sin tocar horarios
+
+  horarios HorarioAtencion[]
+}
+
+model HorarioAtencion {
+  id              Int                @id @default(autoincrement())
+  configuracionId Int
+  configuracion   ConfiguracionLocal @relation(fields: [configuracionId], references: [id], onDelete: Cascade)
+  diaSemana       Int // 0 = domingo, 1 = lunes ... 6 = sábado
+  abre            String // "HH:mm"
+  cierra          String // "HH:mm"
+
+  @@index([configuracionId, diaSemana])
+}
+
+// ---------- Pedidos ----------
+
+model Pedido {
+  id               Int          @id @default(autoincrement())
+  fecha            DateTime     @db.Date // día comercial (con hora de corte)
+  numero           Int // se reinicia cada día
+  tokenSeguimiento String       @unique @default(uuid()) @db.Uuid
+  origen           OrigenPedido @default(WEB)
+
+  clienteNombre   String
+  clienteTelefono String
+
+  tipoEntrega TipoEntrega
+  zonaEnvioId Int?
+  zonaEnvio   ZonaEnvio?  @relation(fields: [zonaEnvioId], references: [id])
+  direccion   String?
+
+  medioPago           MedioPago
+  estadoPago          EstadoPago @default(PENDIENTE)
+  pagoConfirmadoPorId Int?
+  pagoConfirmadoPor   Usuario?   @relation(fields: [pagoConfirmadoPorId], references: [id])
+  pagoConfirmadoEn    DateTime?
+
+  estado             EstadoPedido       @default(NUEVO)
+  motivoCancelacion  MotivoCancelacion?
+  detalleCancelacion String?
+
+  subtotal   Int // suma de los ítems
+  costoEnvio Int @default(0)
+  total      Int // subtotal + costoEnvio
+
+  // Facturación electrónica (etapa futura)
+  facturado       Boolean @default(false)
+  tipoComprobante String?
+  nroComprobante  String?
+  cae             String?
+  docCliente      String?
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  items         PedidoItem[]
+  cambiosEstado PedidoCambioEstado[]
+
+  @@unique([fecha, numero])
+  @@index([fecha, estado])
+  @@index([estado])
+}
+
+model PedidoItem {
+  id             Int       @id @default(autoincrement())
+  pedidoId       Int
+  pedido         Pedido    @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  productoId     Int?
+  producto       Producto? @relation(fields: [productoId], references: [id], onDelete: SetNull)
+  nombreProducto String // snapshot
+  tamanoNombre   String? // snapshot
+  precioUnitario Int // precio base + adicional del tamaño, al momento del pedido
+  cantidad       Int
+  nota           String?
+
+  extras          PedidoItemExtra[]
+  sinIngredientes PedidoItemSinIngrediente[]
+
+  @@index([pedidoId])
+  @@index([productoId])
+}
+
+model PedidoItemExtra {
+  id           Int        @id @default(autoincrement())
+  pedidoItemId Int
+  pedidoItem   PedidoItem @relation(fields: [pedidoItemId], references: [id], onDelete: Cascade)
+  nombreExtra  String // snapshot
+  precio       Int // snapshot
+
+  @@index([pedidoItemId])
+}
+
+model PedidoItemSinIngrediente {
+  id                Int        @id @default(autoincrement())
+  pedidoItemId      Int
+  pedidoItem        PedidoItem @relation(fields: [pedidoItemId], references: [id], onDelete: Cascade)
+  nombreIngrediente String
+
+  @@index([pedidoItemId])
+}
+
+model PedidoCambioEstado {
+  id             Int           @id @default(autoincrement())
+  pedidoId       Int
+  pedido         Pedido        @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  estadoAnterior EstadoPedido? // null en el primer registro (cuando se crea)
+  estadoNuevo    EstadoPedido
+  usuarioId      Int? // null si lo hizo el cliente desde la web
+  usuario        Usuario?      @relation(fields: [usuarioId], references: [id])
+  creadoEn       DateTime      @default(now())
+
+  @@index([pedidoId])
+}
